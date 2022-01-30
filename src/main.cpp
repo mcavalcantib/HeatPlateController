@@ -4,12 +4,18 @@
  *  ------------------- */
 bool dhtActivated = false;
 bool isHeatActivated = false;
-volatile int targetTemperature = 30;
+volatile int targetTemperature = 40;
 float actualTemperature = 0;
 long contador = 0;
 int16_t aux;
 volatile uint8_t portbHistory = 0xFF;  // padrão é alto por causa do pull-up
 uint16_t P = 1500, I = 900, D = 800;
+// ---- PID Variables ------
+
+uint16_t activityCount = 0;  ///< How many ticks since last setpoint change.
+uint16_t activityThres = 0;  ///< Threshold for turning off the output.
+uint8_t errThres = 1;        ///< Threshold with hysteresis.
+int32_t integral = 0;        ///< Sum of previous errors for integral.
 
 /** ------------------------------------------
  * Object instances declaration
@@ -22,6 +28,7 @@ MAX6675 thermo(MAX6675_SCLK, MAX6675_CS, MAX6675_MISO);
  *  Functions declarations
  ---------------------------------------------- */
 void Interruptions_Configuration();
+uint8_t PID_update(uint16_t actualValue);
 /**--------------------------------------------
  * Functions implementarions
  ----------------------------------------------*/
@@ -41,16 +48,20 @@ void setup() {
 void loop() {
     if (millis() - contador > 250) {
         contador = millis();
-        Serial.print("Temp: ");
+        #ifdef DEBUG_MODE
+        Serial.print("Temperatura:");
         Serial.println(actualTemperature, BIN);
+        #endif
         display.clearDisplay();
         display.setTextColor(WHITE);
         // Header
         String textToDisplay = "HEATER: ";
         display.setTextSize(1);
         display.setCursor(0, 0);
-        if (isHeatActivated) textToDisplay += "ON";
-        else  textToDisplay += "OFF";
+        if (isHeatActivated)
+            textToDisplay += "ON";
+        else
+            textToDisplay += "OFF";
         display.println(textToDisplay);
         // Body
         textToDisplay = "";
@@ -62,29 +73,32 @@ void loop() {
         textToDisplay += "C";
         display.println(textToDisplay);
         display.display();
+        #if defined(PLOT_MODE) && !defined(DEBUG_MODE)
+        Serial.print("Target temperature: ");
+        Serial.print(targetTemperature);
+        Serial.print(",");
+        Serial.print("Current Temperature: ");
+        Serial.println(actualTemperature);
+        #endif
     }
 }
 
 ISR(TIMER1_COMPA_vect) {
-    actualTemperature = thermo.readCelsius();
+    //uint8_t output = 0;
+    actualTemperature = round(thermo.readCelsius());
+    uint8_t output = PID_update(actualTemperature);
     // Thermistor analog reading
-    if (isHeatActivated) {
-        if (actualTemperature < targetTemperature) {
-            digitalWrite(HEATER_SIGNAL_PIN,
-                         HIGH);  // aciona a resistencia de aquecimento
-        } else if (actualTemperature >
-                   targetTemperature *
-                       0.95) {  // Little compensation before the PID algorithm
-            digitalWrite(HEATER_SIGNAL_PIN,
-                         LOW);  // desliga a resistencia de aquecimento
-        } else {
-            digitalWrite(HEATER_SIGNAL_PIN,
-                         LOW);  // desliga a resistencia de aquecimento
-        }
-    } else {
-        digitalWrite(HEATER_SIGNAL_PIN,
-                     LOW);  // desliga a resistencia de aquecimento
-    }
+    // if (actualTemperature <= 0.8*targetTemperature)
+    // {
+    //     output = 255;
+    // }
+    if (!isHeatActivated) output = 0;
+    #ifdef DEBUG_MODE
+    Serial.print("Final: ");
+    Serial.println(output);
+    #endif
+    analogWrite(HEATER_SIGNAL_PIN,
+                output);  // aciona a resistencia de aquecimento
 }
 
 ISR(PCINT0_vect) {
@@ -117,7 +131,8 @@ void Interruptions_Configuration() {
     TCCR1B = 0;  // same for TCCR1B
     TCNT1 = 0;   // initialize counter value to 0
     // set compare match register for 4 Hz increments
-    OCR1A = 62499;  // = 16000000 / (64 * 4) - 1 (must be <65536)
+    OCR1A =
+        INTERRUPT_REGISTER_VALUE;  // = 16000000 / (64 * 4) - 1 (must be <65536)
     // turn on CTC mode
     TCCR1B |= (1 << WGM12);
     // Set CS12, CS11 and CS10 bits for 64 prescaler
@@ -139,4 +154,37 @@ void Interruptions_Configuration() {
         (1 << PCINT0) | (1 << PCINT1) |
         (1 << PCINT2);  // aciona PCINT0 to trigger an interrupt on state change
     sei();
+}
+
+uint8_t PID_update(uint16_t actualValue) {
+    // e[k] = r[k] - y[k], error between setpoint and true position
+    int16_t error = targetTemperature - actualValue;
+    // e_d[k] = (e_f[k] - e_f[k-1]) / Tₛ, filtered derivative
+    int16_t derivative = round(error / SAMPLING_TIME);
+    // e_i[k+1] = e_i[k] + Tₛ e[k], integral
+    int16_t new_integral = round(integral + error * SAMPLING_TIME);
+
+    // PID formula:
+    // u[k] = Kp e[k] + Ki e_i[k] + Kd e_d[k], control signal
+    int16_t control_u = round(CONSTANT_Kp * error + CONSTANT_Ki * integral +
+                              CONSTANT_Kd * derivative);
+    #ifdef DEBUG_MODE
+    Serial.print("PID: ");
+    Serial.print(control_u);
+    Serial.print(" | ");
+    #endif
+
+    // Clamp the output
+    if (control_u > PID_MAXOUTPUT)
+        control_u = PID_MAXOUTPUT;
+    else if (control_u < 0)
+        control_u = 0;
+    else  // Anti-windup
+        integral = new_integral;
+    // return the control signal
+    #ifdef DEBUG_MODE
+    Serial.print("Controle: ");
+    Serial.println(control_u);
+    #endif
+    return (uint8_t)control_u;
 }
