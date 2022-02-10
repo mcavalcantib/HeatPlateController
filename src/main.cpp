@@ -4,12 +4,18 @@
  *  ------------------- */
 bool dhtActivated = false;
 bool isHeatActivated = false;
-volatile int targetTemperature = 40;
-float actualTemperature = 0;
+volatile int targetTemperature = 110;
+int16_t actualTemperature = 0;
+int16_t PIDValue = 0;
 long contador = 0;
 int16_t aux;
 volatile uint8_t portbHistory = 0xFF;  // padrão é alto por causa do pull-up
-uint16_t P = 1500, I = 900, D = 800;
+
+int16_t temperatureArray[MOVING_AVERAGE_SIZE];
+
+#ifdef THERMISTOR_TEMP_SENSOR
+const double rx = THERMISTOR_RESISTENCE_VALUE * exp(-THERMISTOR_BETA / 298.15);
+#endif
 // ---- PID Variables ------
 
 uint16_t activityCount = 0;  ///< How many ticks since last setpoint change.
@@ -29,12 +35,12 @@ MAX6675 thermo(MAX6675_SCLK, MAX6675_CS, MAX6675_MISO);
  ---------------------------------------------- */
 void Interruptions_Configuration();
 uint8_t PID_update(uint16_t actualValue);
+float ThermistorReading();
 /**--------------------------------------------
  * Functions implementarions
  ----------------------------------------------*/
 void setup() {
     Interruptions_Configuration();
-    Serial.begin(9600);
     pinMode(HEATER_SIGNAL_PIN, OUTPUT);
     display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
     // Clear the buffer.
@@ -42,16 +48,22 @@ void setup() {
     // Display Text "Hello Word"
     display.clearDisplay();
     contador = millis();
+    for(int i = 0; i< MOVING_AVERAGE_SIZE; i++){
+        temperatureArray[i] = round(ThermistorReading());
+    }
+#if defined(DEBUG_MODE) || defined(PLOT_MODE)
+    Serial.begin(9600);
     Serial.println("START");
+#endif
 }
 
 void loop() {
-    if (millis() - contador > 250) {
+    if (millis() - contador > (1000/SAMPLING_FREQUENCY)) {
         contador = millis();
-        #ifdef DEBUG_MODE
+#ifdef DEBUG_MODE
         Serial.print("Temperatura:");
         Serial.println(actualTemperature, BIN);
-        #endif
+#endif
         display.clearDisplay();
         display.setTextColor(WHITE);
         // Header
@@ -73,19 +85,32 @@ void loop() {
         textToDisplay += "C";
         display.println(textToDisplay);
         display.display();
-        #if defined(PLOT_MODE) && !defined(DEBUG_MODE)
-        Serial.print("Target temperature: ");
+#if defined(PLOT_MODE) && !defined(DEBUG_MODE)
+        Serial.print("PIDValue:");
+        Serial.print(PIDValue);
+        Serial.print(",");
+        Serial.print("Target_temperature:");
         Serial.print(targetTemperature);
         Serial.print(",");
-        Serial.print("Current Temperature: ");
+        Serial.print("Current_Temperature:");
         Serial.println(actualTemperature);
-        #endif
+#endif
     }
 }
 
+/**
+ * @brief Timer Interruption function
+ *
+ */
 ISR(TIMER1_COMPA_vect) {
-    //uint8_t output = 0;
+#if defined THERMISTOR_TEMP_SENSOR  // Using Thermiston as temperature sensor
+    actualTemperature = round(ThermistorReading());
+#elif defined MAX6675_TEMP_SENSOR  // Using Thermocouple and MAX6675 as
+                                   // temperature sensor
     actualTemperature = round(thermo.readCelsius());
+#else
+#error System unable to read temperature. No sensors defined
+#endif
     uint8_t output = PID_update(actualTemperature);
     // Thermistor analog reading
     // if (actualTemperature <= 0.8*targetTemperature)
@@ -93,14 +118,18 @@ ISR(TIMER1_COMPA_vect) {
     //     output = 255;
     // }
     if (!isHeatActivated) output = 0;
-    #ifdef DEBUG_MODE
+#ifdef DEBUG_MODE
     Serial.print("Final: ");
     Serial.println(output);
-    #endif
+#endif
     analogWrite(HEATER_SIGNAL_PIN,
                 output);  // aciona a resistencia de aquecimento
 }
 
+/**
+ * @brief Button reading after interruption
+ *
+ */
 ISR(PCINT0_vect) {
     uint8_t changedbits;
     changedbits = PINB ^ portbHistory;  // detecta quem mudou
@@ -156,6 +185,12 @@ void Interruptions_Configuration() {
     sei();
 }
 
+/**
+ * @brief Calculate the output value for a given temp reading
+ *
+ * @param actualValue last temperature reading
+ * @return uint8_t output between 0 and 255
+ */
 uint8_t PID_update(uint16_t actualValue) {
     // e[k] = r[k] - y[k], error between setpoint and true position
     int16_t error = targetTemperature - actualValue;
@@ -168,11 +203,11 @@ uint8_t PID_update(uint16_t actualValue) {
     // u[k] = Kp e[k] + Ki e_i[k] + Kd e_d[k], control signal
     int16_t control_u = round(CONSTANT_Kp * error + CONSTANT_Ki * integral +
                               CONSTANT_Kd * derivative);
-    #ifdef DEBUG_MODE
+#ifdef DEBUG_MODE
     Serial.print("PID: ");
     Serial.print(control_u);
     Serial.print(" | ");
-    #endif
+#endif
 
     // Clamp the output
     if (control_u > PID_MAXOUTPUT)
@@ -181,10 +216,35 @@ uint8_t PID_update(uint16_t actualValue) {
         control_u = 0;
     else  // Anti-windup
         integral = new_integral;
-    // return the control signal
-    #ifdef DEBUG_MODE
+// return the control signal
+#ifdef DEBUG_MODE
     Serial.print("Controle: ");
     Serial.println(control_u);
-    #endif
+#endif
+#ifdef PLOT_MODE
+    PIDValue = (uint8_t)control_u;
+#endif
     return (uint8_t)control_u;
+}
+
+/**
+ * @brief Read the temperature in Celsius using a thermistor
+ *
+ * @return float temperature in Celsius
+ */
+float ThermistorReading() {
+#ifdef THERMISTOR_TEMP_SENSOR
+    // Le o sensor algumas vezes
+    int V0 = 0;
+    V0 = analogRead(THERMISTOR_PIN);
+    // Determina a resistência do termistor
+    double v = (SYSTEM_ANALOG_VCC * V0) / ( 1024.0);
+    double rt = (SYSTEM_ANALOG_VCC * THERMISTOR_RESISTOR_DIVIDER) / v - THERMISTOR_RESISTOR_DIVIDER;
+
+    // Calcula a temperatura
+    double t = THERMISTOR_BETA/ log(rt / rx);
+    return t - 273.0;
+#else
+    return 0.0f;
+#endif
 }
