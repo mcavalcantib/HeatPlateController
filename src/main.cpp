@@ -11,7 +11,8 @@ long contador = 0;
 int16_t aux;
 volatile uint8_t portbHistory = 0xFF;  // padrão é alto por causa do pull-up
 
-int16_t temperatureArray[MOVING_AVERAGE_SIZE];
+int16_t temperatureArray[MOVING_AVERAGE_SIZE], temperatureSum = 0;
+uint8_t movingAveragePosition = 0;
 
 #ifdef THERMISTOR_TEMP_SENSOR
 const double rx = THERMISTOR_RESISTENCE_VALUE * exp(-THERMISTOR_BETA / 298.15);
@@ -48,7 +49,7 @@ void setup() {
     // Display Text "Hello Word"
     display.clearDisplay();
     contador = millis();
-    for(int i = 0; i< MOVING_AVERAGE_SIZE; i++){
+    for (int i = 0; i < MOVING_AVERAGE_SIZE; i++) {
         temperatureArray[i] = round(ThermistorReading());
     }
 #if defined(DEBUG_MODE) || defined(PLOT_MODE)
@@ -58,7 +59,7 @@ void setup() {
 }
 
 void loop() {
-    if (millis() - contador > (1000/SAMPLING_FREQUENCY)) {
+    if (millis() - contador > (1000 / SAMPLING_FREQUENCY)) {
         contador = millis();
 #ifdef DEBUG_MODE
         Serial.print("Temperatura:");
@@ -104,7 +105,13 @@ void loop() {
  */
 ISR(TIMER1_COMPA_vect) {
 #if defined THERMISTOR_TEMP_SENSOR  // Using Thermiston as temperature sensor
-    actualTemperature = round(ThermistorReading());
+    temperatureArray[movingAveragePosition] = round(ThermistorReading());
+    movingAveragePosition = (movingAveragePosition + 1) % MOVING_AVERAGE_SIZE;
+    temperatureSum = 0;
+    for (int i = 0; i < MOVING_AVERAGE_SIZE; i++) {
+        temperatureSum += temperatureArray[i];
+    }
+    actualTemperature = round(temperatureSum / MOVING_AVERAGE_SIZE);
 #elif defined MAX6675_TEMP_SENSOR  // Using Thermocouple and MAX6675 as
                                    // temperature sensor
     actualTemperature = round(thermo.readCelsius());
@@ -238,11 +245,12 @@ float ThermistorReading() {
     int V0 = 0;
     V0 = analogRead(THERMISTOR_PIN);
     // Determina a resistência do termistor
-    double v = (SYSTEM_ANALOG_VCC * V0) / ( 1024.0);
-    double rt = (SYSTEM_ANALOG_VCC * THERMISTOR_RESISTOR_DIVIDER) / v - THERMISTOR_RESISTOR_DIVIDER;
+    double v = (SYSTEM_ANALOG_VCC * V0) / (1024.0);
+    double rt = (SYSTEM_ANALOG_VCC * THERMISTOR_RESISTOR_DIVIDER) / v -
+                THERMISTOR_RESISTOR_DIVIDER;
 
     // Calcula a temperatura
-    double t = THERMISTOR_BETA/ log(rt / rx);
+    double t = THERMISTOR_BETA / log(rt / rx);
     return t - 273.0;
 #else
     return 0.0f;
