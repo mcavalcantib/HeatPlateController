@@ -2,7 +2,7 @@
  * @file config.h
  * @author Moisés Cavalcanti (you@domain.com)
  * @brief 
- * @version 0.5
+ * @version 0.6
  * @date 2021-12-24
  * 
  * @copyright Copyright (c) 2021
@@ -39,7 +39,7 @@
 #if defined THERMISTOR_TEMP_SENSOR //Using Thermiston as temperature sensor
 #define THERMISTOR_PIN A7 //A1 - Thermiston pin (if used)
 #define THERMISTOR_RESISTOR_DIVIDER 50000
-#define THERMISTOR_RESISTENCE_VALUE 100000
+#define THERMISTOR_RESISTENCE_VALUE 99600
 #define THERMISTOR_BETA 3950      // K
 #define THERMISTOR_VCC 5.0f    //Supply voltage
 #define SYSTEM_ANALOG_VCC 5.0f    //Supply voltage
